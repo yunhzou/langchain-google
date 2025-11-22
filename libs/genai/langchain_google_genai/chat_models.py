@@ -724,6 +724,12 @@ def _parse_chat_history(
             role = "model"
             if message.tool_calls:
                 ai_message_parts = []
+
+                # --- FIX START: Preserve text content if present ---
+                if message.content:
+                    ai_message_parts.extend(_convert_to_parts(message.content, model=model))
+                # --- FIX END ---
+
                 function_call_sigs: dict[Any, str] = message.additional_kwargs.get(
                     _FUNCTION_CALL_THOUGHT_SIGNATURES_MAP_KEY, {}
                 )
@@ -829,8 +835,6 @@ def _parse_chat_history(
                             first_fc_seen = True
 
     return system_instruction, formatted_messages
-
-
 # Helper function to append content consistently
 def _append_to_content(
     current_content: str | list[Any] | None, new_item: Any
