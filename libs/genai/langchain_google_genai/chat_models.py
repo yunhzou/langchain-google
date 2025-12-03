@@ -2519,6 +2519,71 @@ class ChatGoogleGenerativeAI(_BaseGoogleGenerativeAI, BaseChatModel):
             else:
                 filtered_messages.append(message)
         messages = filtered_messages
+        # --- START PATCH: MERGE THINKING INTO TEXT ---
+        # Create a new list to hold modified messages
+        patched_messages = []
+
+        for msg in messages:
+            # We only modify AIMessages that have a list-of-dicts content
+            if isinstance(msg, AIMessage) and isinstance(msg.content, list):
+                
+                captured_thoughts = []
+                cleaned_content = []
+                
+                # First pass: Separate thoughts from other content
+                for block in msg.content:
+                    if isinstance(block, dict):
+                        block_type = block.get("type")
+                        
+                        if block_type in ["thinking", "reasoning"]:
+                            # Extract the raw text from the thinking block
+                            thought_text = block.get("thinking") or block.get("reasoning")
+                            if thought_text:
+                                captured_thoughts.append(thought_text)
+                            # INTENTIONALLY DROP this block so it doesn't go to the API as a "thought"
+                        else:
+                            # Keep text, image_url, tool_use, etc.
+                            # We copy the dict to avoid mutating the original reference
+                            cleaned_content.append(block.copy())
+                    else:
+                        # Handle edge case where content might be mixed strings/dicts
+                        cleaned_content.append(block)
+
+                # Second pass: If we found thoughts, inject them into a text block
+                if captured_thoughts:
+                    # Format the thoughts clearly
+                    combined_thought_text = "\n\n".join(captured_thoughts)
+                    header = "**[Past Internal Reasoning]**\n"
+                    footer = "\n\n**[Final Response]**\n"
+                    full_prefix = f"{header}{combined_thought_text}{footer}"
+                    
+                    text_block_found = False
+                    
+                    # Try to prepend to the first available 'text' block
+                    for block in cleaned_content:
+                        if isinstance(block, dict) and block.get("type") == "text":
+                            original_text = block.get("text", "")
+                            block["text"] = full_prefix + original_text
+                            text_block_found = True
+                            break
+                    
+                    # If no text block exists (e.g., only tool calls), create one at the start
+                    if not text_block_found:
+                        cleaned_content.insert(0, {
+                            "type": "text", 
+                            "text": full_prefix
+                        })
+
+                # Update the message with the new cleaned content
+                # Use model_copy to satisfy Pydantic immutability
+                patched_messages.append(msg.model_copy(update={"content": cleaned_content}))
+            
+            else:
+                # Pass through HumanMessages, SystemMessages, or string-content AIMessages unchanged
+                patched_messages.append(msg)
+
+        messages = patched_messages
+        # --- END PATCH ---
 
         if self.convert_system_message_to_human:
             system_instruction, history = _parse_chat_history(
